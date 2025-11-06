@@ -135,10 +135,10 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         # Output text format (backward compatible)
-        log_message(f"Video: {video_info['title']}", output_json)
-        log_message(f"Video ID: {video_info['id']}", output_json)
-        log_message(f"Transcript length: {transcript_data['word_count']} words", output_json)
-        log_message(f"Transcript preview: {transcript_data['text'][:200]}...", output_json)
+        log_message(f'Video: {video_info["title"]}', output_json)
+        log_message(f'Video ID: {video_info["id"]}', output_json)
+        log_message(f'Transcript length: {transcript_data["word_count"]} words', output_json)
+        log_message(f'Transcript preview: {transcript_data["text"][:200]}...', output_json)
     
     log_message("--- Kết thúc phiên làm việc ---", output_json)
 
