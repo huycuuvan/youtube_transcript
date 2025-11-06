@@ -21,7 +21,7 @@ YOUTUBE_CHANNEL_URL = "https://www.youtube.com/c/Ph%C3%AAPhim" # THAY LINK KÊNH
 
 def log_message(message, output_json=False):
     """In thông báo ra màn hình kèm theo thời gian."""
-    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    timestamp = datetime.now().isoformat()
     if not output_json:
         print(f"[{timestamp}] {message}", file=sys.stderr)
 
@@ -95,7 +95,7 @@ def main():
                 print(json.dumps({
                     'success': False,
                     'error': 'Không lấy được thông tin video từ YouTube',
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 }))
             else:
                 log_message("Không lấy được thông tin video từ YouTube. Kết thúc.", output_json)
