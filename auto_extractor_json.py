@@ -105,15 +105,18 @@ def main():
     transcript_data = get_video_transcript(video_info['id'], output_json)
     
     if not transcript_data or not transcript_data.get('text'):
+        error_msg = 'Không thể lấy transcript cho video này. Video có thể không có phụ đề hoặc phụ đề bị tắt.'
         if output_json:
             print(json.dumps({
                 'success': False,
-                'error': 'Không thể lấy transcript cho video này',
+                'error': error_msg,
                 'videoId': video_info['id'],
-                'timestamp': datetime.utcnow().isoformat()
+                'videoTitle': video_info['title'],
+                'videoUrl': video_info['url'],
+                'timestamp': datetime.now().isoformat()
             }))
         else:
-            log_message("Không thể lấy transcript cho video này. Kết thúc.", output_json)
+            log_message(f"Không thể lấy transcript cho video này. Kết thúc.", output_json)
         return
     
     # Output kết quả
