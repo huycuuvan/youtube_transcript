@@ -46,7 +46,36 @@ def get_video_transcript(video_id, output_json=False):
     log_message(f"Đang trích xuất phụ đề cho video ID: {video_id}...", output_json)
     try:
         ytt_api = YouTubeTranscriptApi()
-        transcript_list = ytt_api.fetch(video_id, languages=['vi', 'en'])
+        
+        # Thử lấy transcript với nhiều ngôn ngữ
+        # Thứ tự ưu tiên: vi, en, auto-generated, và các ngôn ngữ khác
+        languages_to_try = ['vi', 'en', 'vi-VN', 'en-US', 'en-GB']
+        
+        transcript_list = None
+        used_language = None
+        
+        # Thử từng ngôn ngữ
+        for lang in languages_to_try:
+            try:
+                transcript_list = ytt_api.fetch(video_id, languages=[lang])
+                used_language = lang
+                log_message(f"Tìm thấy transcript bằng ngôn ngữ: {lang}", output_json)
+                break
+            except:
+                continue
+        
+        # Nếu không tìm thấy, thử lấy bất kỳ transcript nào có sẵn
+        if not transcript_list:
+            try:
+                transcript_list = ytt_api.list_transcripts(video_id)
+                # Lấy transcript đầu tiên có sẵn (có thể là auto-generated)
+                transcript = transcript_list.find_transcript(['vi', 'en'])
+                transcript_list = transcript.fetch()
+                used_language = transcript.language_code
+                log_message(f"Tìm thấy transcript tự động với ngôn ngữ: {used_language}", output_json)
+            except Exception as e2:
+                log_message(f"Không tìm thấy transcript nào. Lỗi: {str(e2)}", output_json)
+                return {'error': str(e2), 'text': None, 'segments': [], 'word_count': 0, 'language': None}
         
         # Tạo full transcript text
         full_transcript = "\n".join([item.text for item in transcript_list])
@@ -65,11 +94,12 @@ def get_video_transcript(video_id, output_json=False):
             'text': full_transcript,
             'segments': segments,
             'word_count': len(full_transcript.split()),
-            'language': transcript_list[0].language if transcript_list else 'unknown'
+            'language': used_language or (transcript_list[0].language if transcript_list else 'unknown')
         }
     except Exception as e:
-        log_message(f"Lỗi khi trích xuất phụ đề: {str(e)}", output_json)
-        return None
+        error_msg = str(e)
+        log_message(f"Lỗi khi trích xuất phụ đề: {error_msg}", output_json)
+        return {'error': error_msg, 'text': None, 'segments': [], 'word_count': 0, 'language': None}
 
 def main():
     """Hàm logic chính của script."""
@@ -105,11 +135,13 @@ def main():
     transcript_data = get_video_transcript(video_info['id'], output_json)
     
     if not transcript_data or not transcript_data.get('text'):
-        error_msg = 'Không thể lấy transcript cho video này. Video có thể không có phụ đề hoặc phụ đề bị tắt.'
+        error_detail = transcript_data.get('error', 'Video có thể không có phụ đề hoặc phụ đề bị tắt.')
+        error_msg = f'Không thể lấy transcript cho video này. {error_detail}'
         if output_json:
             print(json.dumps({
                 'success': False,
                 'error': error_msg,
+                'errorDetail': transcript_data.get('error') if transcript_data else None,
                 'videoId': video_info['id'],
                 'videoTitle': video_info['title'],
                 'videoUrl': video_info['url'],
