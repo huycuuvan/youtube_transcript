@@ -1,0 +1,457 @@
+{
+  "name": "YouTube Transcript to Video (Complete Flow)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "command": "cd /home/node/scripts && python3 auto_extractor_json.py --output-json",
+        "options": {}
+      },
+      "id": "execute-script",
+      "name": "Execute Script - Get Transcript",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse output from Python script\nconst output = $input.item.json.stdout || $input.item.json.output;\nlet data;\n\ntry {\n  data = JSON.parse(output);\n} catch (e) {\n  // If not JSON, try to extract video info from text\n  const videoIdMatch = output.match(/videoId['\"]?\\s*[:=]\\s*['\"]([^'\"]+)['\"]/);\n  const titleMatch = output.match(/title['\"]?\\s*[:=]\\s*['\"]([^'\"]+)['\"]/);\n  const transcriptMatch = output.match(/transcript['\"]?\\s*[:=]\\s*['\"]([^'\"]+)['\"]/s);\n  \n  data = {\n    videoId: videoIdMatch ? videoIdMatch[1] : null,\n    title: titleMatch ? titleMatch[1] : 'Unknown',\n    transcript: transcriptMatch ? transcriptMatch[1] : output\n  };\n}\n\nreturn {\n  json: {\n    videoId: data.videoId || data.id,\n    title: data.title || 'Unknown Title',\n    transcript: data.transcript || data.text || '',\n    channelUrl: data.channelUrl || '{{ $env.YOUTUBE_CHANNEL_URL }}',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "parse-output",
+      "name": "Parse Script Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-transcript",
+              "leftValue": "={{ $json.transcript }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-transcript-exists",
+      "name": "Check Transcript Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $env.SHEET_NAME || 'Trang tính1' }}",
+          "mode": "list",
+          "cachedResultName": "Trang tính1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "A": "={{ $json.timestamp }}",
+            "B": "={{ $json.title }}",
+            "C": "={{ $json.videoId }}",
+            "D": "={{ $json.transcript.substring(0, 49999) }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "save-to-sheets",
+      "name": "Save to Google Sheets (Optional)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1050, 200],
+      "notes": "Optional: Save transcript to Google Sheets"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Chunk transcript into smaller pieces for translation\n// Each chunk should be ~3000-5000 characters to avoid token limits\nconst transcript = $input.item.json.transcript;\nconst chunkSize = 4000; // characters per chunk\nconst chunks = [];\n\n// Split by sentences to avoid breaking mid-sentence\nconst sentences = transcript.split(/(?<=[.!?])\\s+/);\nlet currentChunk = '';\n\nfor (const sentence of sentences) {\n  if ((currentChunk + sentence).length > chunkSize && currentChunk) {\n    chunks.push(currentChunk.trim());\n    currentChunk = sentence;\n  } else {\n    currentChunk += (currentChunk ? ' ' : '') + sentence;\n  }\n}\n\nif (currentChunk) {\n  chunks.push(currentChunk.trim());\n}\n\n// Return items for each chunk\nreturn chunks.map((chunk, index) => ({\n  json: {\n    chunkIndex: index,\n    totalChunks: chunks.length,\n    chunkText: chunk,\n    videoId: $input.item.json.videoId,\n    title: $input.item.json.title,\n    originalTranscript: transcript\n  }\n}));"
+      },
+      "id": "chunk-transcript",
+      "name": "Chunk Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://nca:8080/api/llm/translate",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.chunkText }}\",\n  \"sourceLang\": \"vi\",\n  \"targetLang\": \"en\",\n  \"model\": \"gpt-4o-mini\"\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "translate-chunk",
+      "name": "Translate Chunk (NCA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge all translated chunks back together\nconst items = $input.all();\n\n// Sort by chunkIndex\nitems.sort((a, b) => a.json.chunkIndex - b.json.chunkIndex);\n\n// Extract translated text from each chunk\nconst translatedChunks = items.map(item => {\n  // NCA returns translated text in response\n  return item.json.translatedText || item.json.text || item.json.chunkText;\n});\n\nconst fullTranslatedText = translatedChunks.join(' ');\n\nreturn {\n  json: {\n    videoId: items[0].json.videoId,\n    title: items[0].json.title,\n    originalTranscript: items[0].json.originalTranscript,\n    translatedText: fullTranslatedText,\n    chunkCount: items.length,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "merge-translations",
+      "name": "Merge Translations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://nca:8080/api/llm/summarize",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.translatedText }}\",\n  \"task\": \"summarize_and_extract_visual_concepts\",\n  \"model\": \"gpt-4o\",\n  \"prompt\": \"Summarize this English transcript in 8 bullet points. Then create 3-5 image prompts for thumbnail-friendly visuals. Each prompt should be 1-2 sentences, specific nouns, cinematic lighting, consistent art style. Return JSON: {summary: string, imagePrompts: string[]}\"\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "summarize-and-extract-prompts",
+      "name": "Summarize & Extract Image Prompts (NCA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse summary response and create items for each image prompt\nconst response = $input.item.json;\nlet summaryData;\n\ntry {\n  if (typeof response === 'string') {\n    summaryData = JSON.parse(response);\n  } else {\n    summaryData = response;\n  }\n} catch (e) {\n  // Fallback: try to extract from text\n  summaryData = {\n    summary: response.summary || response.text || '',\n    imagePrompts: response.imagePrompts || []\n  };\n}\n\n// Ensure we have 3-5 prompts\nconst prompts = summaryData.imagePrompts || [];\nif (prompts.length === 0) {\n  // Generate default prompts if none provided\n  prompts.push('Cinematic scene related to the video topic');\n  prompts.push('Abstract visual representation of the main theme');\n  prompts.push('Professional thumbnail image for the content');\n}\n\n// Limit to 5 prompts max\nconst finalPrompts = prompts.slice(0, 5);\n\n// Return base data + items for each prompt\nconst baseData = {\n  videoId: $input.item.json.videoId || $('merge-translations').item.json.videoId,\n  title: $input.item.json.title || $('merge-translations').item.json.title,\n  translatedText: $('merge-translations').item.json.translatedText,\n  summary: summaryData.summary,\n  totalPrompts: finalPrompts.length\n};\n\nreturn finalPrompts.map((prompt, index) => ({\n  json: {\n    ...baseData,\n    promptIndex: index + 1,\n    imagePrompt: prompt\n  }\n}));"
+      },
+      "id": "prepare-image-prompts",
+      "name": "Prepare Image Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://nca:8080/api/image/generate",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"prompt\": \"{{ $json.imagePrompt }}\",\n  \"size\": \"1920x1080\",\n  \"model\": \"stable-diffusion-xl\",\n  \"steps\": 30,\n  \"guidance_scale\": 7.5\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "generate-image",
+      "name": "Generate Image (NCA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect all generated images\nconst items = $input.all();\n\n// Sort by promptIndex\nitems.sort((a, b) => a.json.promptIndex - b.json.promptIndex);\n\n// Extract image URLs/paths\nconst imageUrls = items.map(item => {\n  return item.json.imageUrl || item.json.url || item.json.path || '';\n}).filter(url => url);\n\nreturn {\n  json: {\n    videoId: items[0].json.videoId,\n    title: items[0].json.title,\n    translatedText: items[0].json.translatedText,\n    summary: items[0].json.summary,\n    imageUrls: imageUrls,\n    imageCount: imageUrls.length,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "collect-images",
+      "name": "Collect All Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://nca:8080/api/audio/tts",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.translatedText }}\",\n  \"voice\": \"en-US-Neural2-D\",\n  \"speed\": 1.0,\n  \"format\": \"mp3\"\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "text-to-speech",
+      "name": "Text to Speech (NCA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2250, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare data for video composition\nconst imageData = $('collect-images').item.json;\nconst audioData = $input.item.json;\n\n// Calculate duration per image based on audio length\n// Assume audio duration is provided or estimate from text length\n// Average speaking rate: ~150 words/minute\nconst wordCount = imageData.translatedText.split(/\\s+/).length;\nconst estimatedDuration = (wordCount / 150) * 60; // seconds\nconst durationPerImage = Math.ceil(estimatedDuration / imageData.imageCount);\n\nreturn {\n  json: {\n    videoId: imageData.videoId,\n    title: imageData.title,\n    imageUrls: imageData.imageUrls,\n    audioUrl: audioData.audioUrl || audioData.url || audioData.path,\n    durationPerImage: durationPerImage,\n    totalDuration: estimatedDuration,\n    subtitles: imageData.translatedText,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "prepare-video-data",
+      "name": "Prepare Video Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 500]
+    },
+    {
+      "parameters": {
+        "url": "http://nca:8080/api/video/compose",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"images\": {{ $json.imageUrls }},\n  \"audioUrl\": \"{{ $json.audioUrl }}\",\n  \"subtitles\": \"{{ $json.subtitles }}\",\n  \"durationPerImage\": {{ $json.durationPerImage }},\n  \"transitions\": \"fade\",\n  \"outputFormat\": \"mp4\",\n  \"resolution\": \"1920x1080\"\n}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "compose-video",
+      "name": "Compose Video (NCA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2650, 500]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $env.SHEET_NAME || 'Trang tính1' }}",
+          "mode": "list",
+          "cachedResultName": "Trang tính1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "A": "={{ $json.timestamp }}",
+            "B": "={{ $json.title }}",
+            "C": "={{ $json.videoId }}",
+            "E": "={{ $json.videoUrl || 'Processing...' }}",
+            "F": "={{ $json.status || 'completed' }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "save-video-metadata",
+      "name": "Save Video Metadata",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [2850, 500],
+      "notes": "Save final video URL and metadata"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute Script - Get Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Script - Get Transcript": {
+      "main": [
+        [
+          {
+            "node": "Parse Script Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script Output": {
+      "main": [
+        [
+          {
+            "node": "Check Transcript Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Transcript Exists": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets (Optional)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Chunk Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets (Optional)": {
+      "main": [
+        []
+      ]
+    },
+    "Chunk Transcript": {
+      "main": [
+        [
+          {
+            "node": "Translate Chunk (NCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translate Chunk (NCA)": {
+      "main": [
+        [
+          {
+            "node": "Merge Translations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Translations": {
+      "main": [
+        [
+          {
+            "node": "Summarize & Extract Image Prompts (NCA)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Text to Speech (NCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize & Extract Image Prompts (NCA)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Image Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Image Prompts": {
+      "main": [
+        [
+          {
+            "node": "Generate Image (NCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Image (NCA)": {
+      "main": [
+        [
+          {
+            "node": "Collect All Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect All Images": {
+      "main": [
+        [
+          {
+            "node": "Prepare Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text to Speech (NCA)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Video Data": {
+      "main": [
+        [
+          {
+            "node": "Compose Video (NCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Video (NCA)": {
+      "main": [
+        [
+          {
+            "node": "Save Video Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "1"
+}
+
