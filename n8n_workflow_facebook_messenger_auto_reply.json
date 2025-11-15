@@ -1,0 +1,369 @@
+{
+  "name": "Facebook Messenger Auto Reply - AI Customer Service",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "facebook-messenger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Facebook Messenger Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "facebook-messenger-webhook"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"ok\" } }}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Facebook Messenger Webhook payload\nconst body = $input.item.json;\n\n// Facebook webhook verification (GET request)\nif ($input.item.json['hub.mode'] === 'subscribe' && $input.item.json['hub.verify_token']) {\n  const verifyToken = $input.item.json['hub.verify_token'];\n  const challenge = $input.item.json['hub.challenge'];\n  const expectedToken = '{{ $env.FACEBOOK_VERIFY_TOKEN }}';\n  \n  if (verifyToken === expectedToken) {\n    return {\n      json: {\n        verified: true,\n        challenge: challenge\n      }\n    };\n  }\n}\n\n// Parse incoming message\nconst entry = body.entry?.[0];\nconst messaging = entry?.messaging?.[0];\n\nif (messaging && messaging.message && !messaging.message.is_echo) {\n  const senderId = messaging.sender.id;\n  const recipientId = messaging.recipient.id;\n  const messageText = messaging.message.text || '';\n  const messageId = messaging.message.mid;\n  const timestamp = messaging.timestamp;\n  \n  return {\n    json: {\n      senderId: senderId,\n      pageId: recipientId,\n      messageText: messageText,\n      messageId: messageId,\n      timestamp: timestamp,\n      hasMessage: true\n    }\n  };\n}\n\n// If no message, return empty\nreturn {\n  json: {\n    hasMessage: false\n  }\n};"
+      },
+      "id": "parse-facebook-webhook",
+      "name": "Parse Facebook Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-has-message",
+              "leftValue": "={{ $json.hasMessage }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-message",
+      "name": "Check Has Message",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if message is a simple/common question\nconst messageText = ($input.item.json.messageText || '').toLowerCase();\n\n// Keywords for simple questions\nconst simpleKeywords = [\n  'dịch vụ', 'dich vu', 'service',\n  'sản phẩm', 'san pham', 'product',\n  'giá', 'gia', 'price', 'pricing',\n  'địa chỉ', 'dia chi', 'address', 'location',\n  'giờ mở cửa', 'gio mo cua', 'opening hours', 'hours',\n  'liên hệ', 'lien he', 'contact', 'phone', 'số điện thoại',\n  'website', 'web',\n  'chào', 'chao', 'hello', 'hi',\n  'cảm ơn', 'cam on', 'thank',\n  'tư vấn', 'tu van', 'consultation',\n  'đặt hàng', 'dat hang', 'order',\n  'giao hàng', 'giao hang', 'delivery',\n  'thanh toán', 'thanh toan', 'payment'\n];\n\n// Check if message contains simple keywords\nconst isSimpleQuestion = simpleKeywords.some(keyword => \n  messageText.includes(keyword)\n);\n\n// Check message length (very long messages might be complex)\nconst isShortMessage = messageText.length < 200;\n\n// Determine if it's a simple question\nconst isSimple = isSimpleQuestion && isShortMessage;\n\nreturn {\n  json: {\n    ...$input.item.json,\n    isSimpleQuestion: isSimple,\n    messageLength: messageText.length,\n    matchedKeywords: simpleKeywords.filter(k => messageText.includes(k))\n  }\n};"
+      },
+      "id": "classify-message",
+      "name": "Classify Message Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-simple-question",
+              "leftValue": "={{ $json.isSimpleQuestion }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-question-type",
+      "name": "Check Question Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load company data (can be from env, database, or hardcoded)\nconst companyData = {\n  name: '{{ $env.COMPANY_NAME || \"Công ty của bạn\" }}',\n  services: [\n    '{{ $env.COMPANY_SERVICES || \"Dịch vụ tư vấn, Dịch vụ thiết kế\" }}'\n  ].flat(),\n  products: [\n    '{{ $env.COMPANY_PRODUCTS || \"Sản phẩm A, Sản phẩm B\" }}'\n  ].flat(),\n  address: '{{ $env.COMPANY_ADDRESS || \"123 Đường ABC, Quận XYZ, TP.HCM\" }}',\n  phone: '{{ $env.COMPANY_PHONE || \"0123456789\" }}',\n  email: '{{ $env.COMPANY_EMAIL || \"contact@company.com\" }}',\n  website: '{{ $env.COMPANY_WEBSITE || \"https://company.com\" }}',\n  openingHours: '{{ $env.COMPANY_HOURS || \"Thứ 2 - Thứ 6: 8:00 - 17:00\" }}',\n  prices: {\n    '{{ $env.COMPANY_PRICE_1 || \"Dịch vụ A\" }}': '{{ $env.COMPANY_PRICE_1_VALUE || \"1,000,000 VNĐ\" }}',\n    '{{ $env.COMPANY_PRICE_2 || \"Dịch vụ B\" }}': '{{ $env.COMPANY_PRICE_2_VALUE || \"2,000,000 VNĐ\" }}'\n  }\n};\n\nconst messageText = $input.item.json.messageText;\n\nreturn {\n  json: {\n    ...$input.item.json,\n    companyData: companyData,\n    prompt: `Bạn là nhân viên chăm sóc khách hàng chuyên nghiệp của ${companyData.name}.\n\nThông tin công ty:\n- Tên: ${companyData.name}\n- Dịch vụ: ${companyData.services.join(', ')}\n- Sản phẩm: ${companyData.products.join(', ')}\n- Địa chỉ: ${companyData.address}\n- Điện thoại: ${companyData.phone}\n- Email: ${companyData.email}\n- Website: ${companyData.website}\n- Giờ mở cửa: ${companyData.openingHours}\n- Bảng giá:\n${Object.entries(companyData.prices).map(([k, v]) => `  ${k}: ${v}`).join('\\n')}\n\nKhách hàng hỏi: \"${messageText}\"\n\nHãy trả lời một cách thân thiện, chuyên nghiệp, ngắn gọn (tối đa 200 từ). Nếu không có thông tin, hãy đề nghị khách hàng liên hệ trực tiếp.\n\nTrả lời bằng tiếng Việt:`\n  }\n};"
+      },
+      "id": "prepare-ai-prompt",
+      "name": "Prepare AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.OPENAI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Bạn là nhân viên chăm sóc khách hàng chuyên nghiệp, thân thiện và nhiệt tình.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.prompt }}\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 300\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract AI response\nconst response = $input.item.json;\nconst aiResponse = response.choices?.[0]?.message?.content || 'Xin lỗi, tôi không thể trả lời câu hỏi này. Vui lòng liên hệ trực tiếp với chúng tôi.';\n\nreturn {\n  json: {\n    ...$('Prepare AI Prompt').item.json,\n    aiResponse: aiResponse.trim()\n  }\n};"
+      },
+      "id": "extract-ai-response",
+      "name": "Extract AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.FACEBOOK_PAGE_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.senderId }}\"\n  },\n  \"message\": {\n    \"text\": \"{{ $json.aiResponse }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "send-facebook-reply",
+      "name": "Send Facebook Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.FACEBOOK_PAGE_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.senderId }}\"\n  },\n  \"message\": {\n    \"text\": \"Cảm ơn bạn đã liên hệ! Câu hỏi của bạn đã được gửi đến đội ngũ tư vấn. Chúng tôi sẽ phản hồi trong thời gian sớm nhất.\\n\\nTin nhắn của bạn: {{ $json.messageText }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "send-acknowledgment",
+      "name": "Send Acknowledgment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOTIFICATION_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK' }}",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🔔 Câu hỏi cần xác nhận từ Facebook Messenger\\n\\nNgười gửi: {{ $json.senderId }}\\nTin nhắn: {{ $json.messageText }}\\n\\nVui lòng phản hồi qua Facebook Page hoặc approve tin nhắn này.\",\n  \"username\": \"Facebook Messenger Bot\",\n  \"icon_emoji\": \":speech_balloon:\"\n}",
+        "options": {}
+      },
+      "id": "notify-human",
+      "name": "Notify Human (Slack/Email)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log the conversation for review\nconst data = $input.item.json;\n\nreturn {\n  json: {\n    timestamp: new Date().toISOString(),\n    senderId: data.senderId,\n    messageText: data.messageText,\n    messageType: data.isSimpleQuestion ? 'simple' : 'complex',\n    status: 'pending_review'\n  }\n};"
+      },
+      "id": "log-conversation",
+      "name": "Log Conversation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    }
+  ],
+  "connections": {
+    "Facebook Messenger Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Facebook Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Facebook Webhook": {
+      "main": [
+        [
+          {
+            "node": "Check Has Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Has Message": {
+      "main": [
+        [
+          {
+            "node": "Classify Message Type",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Classify Message Type": {
+      "main": [
+        [
+          {
+            "node": "Check Question Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Question Type": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Acknowledgment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "AI Agent (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Extract AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract AI Response": {
+      "main": [
+        [
+          {
+            "node": "Send Facebook Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Acknowledgment": {
+      "main": [
+        [
+          {
+            "node": "Notify Human (Slack/Email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Human (Slack/Email)": {
+      "main": [
+        [
+          {
+            "node": "Log Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "1"
+}
+

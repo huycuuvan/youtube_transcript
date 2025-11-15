@@ -1,6 +1,3 @@
-# auto_extractor_json.py
-# Version cải tiến để output JSON cho n8n workflow
-
 import sys
 import re
 import os.path
@@ -12,10 +9,6 @@ from datetime import datetime
 import scrapetube
 from youtube_transcript_api import YouTubeTranscriptApi
 
-# ==============================================================================
-# --- CẤU HÌNH ---
-# Vui lòng điền các thông tin mặc định của bạn vào đây
-# ==============================================================================
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/c/Ph%C3%AAPhim" # THAY LINK KÊNH CỦA BẠN
 # ==============================================================================
 
@@ -101,12 +94,36 @@ def get_video_transcript(video_id, output_json=False):
         log_message(f"Lỗi khi trích xuất phụ đề: {error_msg}", output_json)
         return {'error': error_msg, 'text': None, 'segments': [], 'word_count': 0, 'language': None}
 
+def extract_video_id_from_url(url_or_id):
+    """Trích xuất video ID từ YouTube URL hoặc trả về ID nếu đã là ID."""
+    if not url_or_id:
+        return None
+    
+    # Nếu đã là video ID (chỉ chứa ký tự hợp lệ)
+    if re.match(r'^[a-zA-Z0-9_-]{11}$', url_or_id):
+        return url_or_id
+    
+    # Các pattern YouTube URL phổ biến
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/.*[?&]v=([a-zA-Z0-9_-]{11})',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url_or_id)
+        if match:
+            return match.group(1)
+    
+    return None
+
 def main():
     """Hàm logic chính của script."""
     parser = argparse.ArgumentParser(description='Extract YouTube transcript')
     parser.add_argument('--output-json', action='store_true', help='Output JSON format for n8n')
     parser.add_argument('--channel-url', type=str, help='YouTube channel URL (overrides config)')
-    parser.add_argument('--video-id', type=str, help='Specific video ID to extract (skips latest video)')
+    parser.add_argument('--video-id', type=str, help='Specific video ID or URL to extract (skips latest video)')
+    # Hỗ trợ environment variable
+    video_id_from_env = os.environ.get('YOUTUBE_VIDEO_ID') or os.environ.get('YOUTUBE_VIDEO_URL')
     
     args = parser.parse_args()
     output_json = args.output_json
@@ -114,11 +131,45 @@ def main():
     
     log_message("--- Bắt đầu phiên làm việc ---", output_json)
     
+    # Lấy video ID từ argument hoặc environment variable
+    video_input = args.video_id or video_id_from_env
+    video_id = None
+    is_channel_url = False
+    
+    if video_input:
+        # Kiểm tra xem có phải channel URL không
+        channel_patterns = [
+            r'youtube\.com\/c\/',
+            r'youtube\.com\/channel\/',
+            r'youtube\.com\/user\/',
+            r'youtube\.com\/@',
+        ]
+        
+        is_channel_url = any(re.search(pattern, video_input) for pattern in channel_patterns)
+        
+        if is_channel_url:
+            # Nếu là channel URL, dùng nó để lấy video mới nhất
+            log_message(f"Phát hiện channel URL, sẽ lấy video mới nhất từ channel: {video_input}", output_json)
+            channel_url = video_input
+        else:
+            # Thử trích xuất video ID từ URL
+            video_id = extract_video_id_from_url(video_input)
+            if not video_id:
+                log_message(f"Không thể trích xuất video ID từ: {video_input}", output_json)
+                if output_json:
+                    print(json.dumps({
+                        'success': False,
+                        'error': f'URL hoặc Video ID không hợp lệ: {video_input}',
+                        'timestamp': datetime.now().isoformat()
+                    }))
+                return
+    
     # Lấy thông tin video
-    if args.video_id:
-        video_info = {'id': args.video_id, 'title': 'Unknown', 'url': f"https://www.youtube.com/watch?v={args.video_id}"}
-        log_message(f"Sử dụng video ID được chỉ định: {args.video_id}", output_json)
+    if video_id:
+        video_info = {'id': video_id, 'title': 'Unknown', 'url': f"https://www.youtube.com/watch?v={video_id}"}
+        log_message(f"Sử dụng video ID được chỉ định: {video_id}", output_json)
     else:
+        # Lấy video mới nhất từ channel (từ channel_url đã được set ở trên hoặc default)
         video_info = get_latest_video_info(channel_url, output_json)
         if not video_info:
             if output_json:
