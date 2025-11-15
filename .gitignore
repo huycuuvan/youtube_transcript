@@ -1,1 +1,39 @@
 **/venv/
+**/__pycache__/
+**/node_modules/
+**/package-lock.json
+**/package.json
+**/package.json.lock
+**/package.json.lock.json
+**/package.json.lock.json.lock
+**/package.json.lock.json.lock.json
+**/package.json.lock.json.lock.json.lock
+**/package.json.lock.json.lock.json.lock.json
+**/package.json.lock.json.lock.json.lock.json.lock
+/jsons/
+
+# Secrets và Credentials
+token.json
+credentials.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Google Cloud Credentials
+*credentials*.json
+*service-account*.json
+lateral-*.json
+*-booking-*.json
+*-cb6a798f4a1f.json
+
+# n8n workflow files (chứa API keys - KHÔNG commit)
+n8n_workflow_*.json
+
+# API Keys và Tokens
+.env
+.env.local
+.env.*.local
+*.env
+secrets/
+.secrets/
