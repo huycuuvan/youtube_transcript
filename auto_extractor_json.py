@@ -8,7 +8,17 @@ from datetime import datetime
 # Các thư viện bên ngoài
 import scrapetube
 from youtube_transcript_api import YouTubeTranscriptApi
+# Thư viện để lấy metadata đầy đủ
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    YT_DLP_AVAILABLE = False
 
+# ==============================================================================
+# --- CẤU HÌNH ---
+# Vui lòng điền các thông tin mặc định của bạn vào đây
+# ==============================================================================
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/c/Ph%C3%AAPhim" # THAY LINK KÊNH CỦA BẠN
 # ==============================================================================
 
@@ -33,6 +43,96 @@ def get_latest_video_info(channel_url, output_json=False):
     except Exception as e:
         log_message(f"Lỗi khi lấy video: {e}", output_json)
         return None
+
+def get_video_metadata(video_id, output_json=False):
+    """Lấy đầy đủ metadata từ YouTube video bằng yt-dlp."""
+    if not YT_DLP_AVAILABLE:
+        if not output_json:
+            print("Warning: yt-dlp not installed. Some metadata may not be available. Install with: pip install yt-dlp", file=sys.stderr)
+        return {}
+    
+    log_message(f"Đang lấy metadata cho video ID: {video_id}...", output_json)
+    metadata = {}
+    
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            info = ydl.extract_info(url, download=False)
+            
+            # Lấy tất cả thông tin có thể
+            metadata = {
+                'title': info.get('title', ''),
+                'description': info.get('description', ''),
+                'tags': info.get('tags', []),
+                'keywords': info.get('tags', []),  # Alias cho tags
+                'hashtags': [],  # Sẽ extract từ description
+                'playlist': info.get('playlist', ''),
+                'playlist_id': info.get('playlist_id', ''),
+                'playlist_title': info.get('playlist_title', ''),
+                'thumbnail': info.get('thumbnail', ''),
+                'thumbnails': info.get('thumbnails', []),
+                'category': info.get('categories', [''])[0] if info.get('categories') else '',
+                'category_id': info.get('category', ''),
+                'visibility': info.get('availability', ''),
+                'age_restricted': info.get('age_limit', 0) > 0,
+                'audience': 'restricted' if info.get('age_limit', 0) > 0 else 'public',  # Suy ra từ age_limit
+                'view_count': info.get('view_count', 0),
+                'like_count': info.get('like_count', 0),
+                'comment_count': info.get('comment_count', 0),
+                'duration': info.get('duration', 0),
+                'upload_date': info.get('upload_date', ''),
+                'channel': info.get('channel', ''),
+                'channel_id': info.get('channel_id', ''),
+                'channel_url': info.get('channel_url', ''),
+                'uploader': info.get('uploader', ''),
+                'uploader_id': info.get('uploader_id', ''),
+                'location': info.get('location', ''),
+                'language': info.get('language', ''),
+                'license': info.get('license', ''),
+            }
+            
+            # Extract hashtags từ description
+            if metadata.get('description'):
+                hashtags = re.findall(r'#\w+', metadata['description'])
+                metadata['hashtags'] = list(set(hashtags))  # Remove duplicates
+            
+            # Extract timestamps từ description (format: HH:MM:SS hoặc MM:SS)
+            timestamps = []
+            if metadata.get('description'):
+                # Pattern: 00:12:34 hoặc 12:34
+                timestamp_pattern = r'(\d{1,2}):(\d{2})(?::(\d{2}))?'
+                matches = re.findall(timestamp_pattern, metadata['description'])
+                for match in matches[:3]:  # Lấy tối đa 3 timestamps đầu tiên
+                    if len(match) == 3 and match[2]:
+                        # HH:MM:SS
+                        hours, minutes, seconds = int(match[0]), int(match[1]), int(match[2])
+                        total_seconds = hours * 3600 + minutes * 60 + seconds
+                    else:
+                        # MM:SS
+                        minutes, seconds = int(match[0]), int(match[1])
+                        total_seconds = minutes * 60 + seconds
+                    timestamps.append(total_seconds)
+            
+            metadata['timestamp1'] = timestamps[0] if len(timestamps) > 0 else None
+            metadata['timestamp2'] = timestamps[1] if len(timestamps) > 1 else None
+            metadata['timestamp3'] = timestamps[2] if len(timestamps) > 2 else None
+            
+            # Thumbnail text (có thể extract từ title hoặc description)
+            metadata['thumbnail_text'] = metadata.get('title', '')
+            
+            log_message("Lấy metadata thành công!", output_json)
+            
+    except Exception as e:
+        log_message(f"Lỗi khi lấy metadata: {str(e)}", output_json)
+        # Trả về dict rỗng nếu lỗi, không fail toàn bộ script
+    
+    return metadata
 
 def get_video_transcript(video_id, output_json=False):
     """Lấy transcript từ video YouTube."""
@@ -182,37 +282,68 @@ def main():
                 log_message("Không lấy được thông tin video từ YouTube. Kết thúc.", output_json)
             return
     
+    # Lấy metadata đầy đủ
+    metadata = get_video_metadata(video_info['id'], output_json)
+    
+    # Cập nhật title từ metadata nếu có
+    if metadata.get('title'):
+        video_info['title'] = metadata['title']
+    
     # Lấy transcript
     transcript_data = get_video_transcript(video_info['id'], output_json)
     
-    if not transcript_data or not transcript_data.get('text'):
-        error_detail = transcript_data.get('error', 'Video có thể không có phụ đề hoặc phụ đề bị tắt.')
-        error_msg = f'Không thể lấy transcript cho video này. {error_detail}'
-        if output_json:
-            print(json.dumps({
-                'success': False,
-                'error': error_msg,
-                'errorDetail': transcript_data.get('error') if transcript_data else None,
-                'videoId': video_info['id'],
-                'videoTitle': video_info['title'],
-                'videoUrl': video_info['url'],
-                'timestamp': datetime.now().isoformat()
-            }))
-        else:
-            log_message(f"Không thể lấy transcript cho video này. Kết thúc.", output_json)
-        return
+    # Nếu không có transcript, vẫn trả về metadata (không fail)
+    transcript_text = transcript_data.get('text', '') if transcript_data else ''
+    transcript_segments = transcript_data.get('segments', []) if transcript_data else []
+    transcript_word_count = transcript_data.get('word_count', 0) if transcript_data else 0
+    transcript_language = transcript_data.get('language', '') if transcript_data else ''
     
-    # Output kết quả
+    # Output kết quả với tất cả metadata
     result = {
         'success': True,
         'videoId': video_info['id'],
         'title': video_info['title'],
         'url': video_info['url'],
-        'transcript': transcript_data['text'],
-        'transcriptSegments': transcript_data['segments'],
-        'wordCount': transcript_data['word_count'],
-        'language': transcript_data['language'],
-        'channelUrl': channel_url,
+        
+        # Transcript
+        'transcript': transcript_text,
+        'transcriptSegments': transcript_segments,
+        'wordCount': transcript_word_count,
+        'transcriptLanguage': transcript_language,
+        
+        # Metadata từ yt-dlp
+        'description': metadata.get('description', ''),
+        'tags': metadata.get('tags', []),
+        'keywords': metadata.get('keywords', []),
+        'hashtags': metadata.get('hashtags', []),
+        'playlist': metadata.get('playlist_title', '') or metadata.get('playlist', ''),
+        'playlistId': metadata.get('playlist_id', ''),
+        'thumbnail': metadata.get('thumbnail', ''),
+        'thumbnails': metadata.get('thumbnails', []),
+        'thumbnailText': metadata.get('thumbnail_text', ''),
+        'timestamp1': metadata.get('timestamp1'),
+        'timestamp2': metadata.get('timestamp2'),
+        'timestamp3': metadata.get('timestamp3'),
+        'category': metadata.get('category', ''),
+        'categoryId': metadata.get('category_id', ''),
+        'visibility': metadata.get('visibility', ''),
+        'ageRestricted': metadata.get('age_restricted', False),
+        'audience': metadata.get('audience', 'public'),
+        'viewCount': metadata.get('view_count', 0),
+        'likeCount': metadata.get('like_count', 0),
+        'commentCount': metadata.get('comment_count', 0),
+        'duration': metadata.get('duration', 0),
+        'uploadDate': metadata.get('upload_date', ''),
+        'channel': metadata.get('channel', ''),
+        'channelId': metadata.get('channel_id', ''),
+        'channelUrl': metadata.get('channel_url', '') or channel_url,
+        'uploader': metadata.get('uploader', ''),
+        'uploaderId': metadata.get('uploader_id', ''),
+        'location': metadata.get('location', ''),
+        'language': metadata.get('language', ''),
+        'license': metadata.get('license', ''),
+        
+        # Timestamp
         'timestamp': datetime.utcnow().isoformat()
     }
     
